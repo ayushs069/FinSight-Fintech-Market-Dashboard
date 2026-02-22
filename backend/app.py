@@ -989,4 +989,7 @@ if __name__ == "__main__":
     threading.Thread(target=rt.warmup, daemon=True).start()
     # Pre-warm top-stock forecasts in background
     threading.Thread(target=_prewarm_top_stocks, daemon=True).start()
-    app.run(debug=True, host="0.0.0.0", port=8000, use_reloader=False)
+
+    port = int(os.environ.get("PORT", 8000))
+    debug = os.environ.get("FLASK_ENV", "development") == "development"
+    app.run(debug=debug, host="0.0.0.0", port=port, use_reloader=False)
