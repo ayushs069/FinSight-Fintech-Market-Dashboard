@@ -1,16 +1,53 @@
-# React + Vite
+# Fintech Market Dashboard Analysis
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A full-stack fintech dashboard built with **React + Vite** and a **Python (Flask)** backend. It provides real-time-style market analysis, portfolio tracking, DSFM analytics, sentiment analysis, and NIFTY charts — inspired by platforms like Kotak Neo.
 
-Currently, two official plugins are available:
+## 🚀 Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- 📈 **Market Overview** — Live-style market movers, heatmap, and NIFTY charts
+- 💼 **Portfolio Tracker** — Track your investments and performance
+- 🔍 **DSFM Analytics** — ARIMA-based forecasting and data-driven stock analysis
+- 🧠 **Sentiment Analysis** — Market sentiment from sample data
+- 🏆 **Superstar Investors** — Track top investor portfolios
+- 🛒 **Most Bought / Investment Products** — Trending picks and product listings
 
-## React Compiler
+## 🛠️ Tech Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19, Vite, Tailwind CSS, Recharts |
+| Backend | Python, Flask |
+| Routing | React Router DOM |
+| HTTP | Axios |
 
-## Expanding the ESLint configuration
+## 📦 Getting Started
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+### Frontend
+```bash
+npm install
+npm run dev
+```
+
+### Backend
+```bash
+cd backend
+pip install -r requirements.txt
+python app.py
+```
+
+## 📁 Project Structure
+
+```
+├── src/
+│   ├── components/       # Reusable UI components
+│   ├── pages/            # Page-level components
+│   └── main.jsx
+├── backend/
+│   ├── app.py            # Flask API
+│   ├── data/             # CSV market & sentiment data
+│   └── requirements.txt
+```
+
+## 👤 Author
+
+**ayushs069**
