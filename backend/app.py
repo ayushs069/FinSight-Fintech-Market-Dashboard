@@ -5,19 +5,20 @@ import pandas as pd
 import numpy as np
 import os
 from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 from arch import arch_model
-from math import sqrt
 from datetime import timedelta
+from math import sqrt
 from textblob import TextBlob
 from dotenv import load_dotenv
 import requests
-
+from pmdarima import auto_arima
 
 app = Flask(__name__)
 CORS(app)
 
 # ============================
-#  SYMBOL → REAL COMPANY NAME MAP
+#  SYMBOL → REAL COMPANY NAME MAP (for news query)
 # ============================
 SYMBOL_MAP = {
     "ASIANPAINT": "Asian Paints",
@@ -31,10 +32,7 @@ SYMBOL_MAP = {
     "TECHM": "Tech Mahindra",
     "TATAMTRDVR": "Tata Motors DVR",
     "HINDUNILVR": "Hindustan Unilever",
-    "HINDUNILVR": "HUL",  # optional alias
-    "BAJAJ-AUTO": "Bajaj Auto",
     "BAJAJAUTO": "Bajaj Auto",
-    "M&M": "Mahindra and Mahindra",
     "MM": "Mahindra and Mahindra",
     "LT": "Larsen and Toubro",
 }
@@ -45,8 +43,6 @@ SYMBOL_MAP = {
 BASE_DIR = os.path.dirname(__file__)
 DATA_CSV = os.path.join(BASE_DIR, "data", "market_data.csv")
 HOLDINGS_CSV = os.path.join(BASE_DIR, "data", "holdings.csv")
-SENTIMENT_CSV = os.path.join(BASE_DIR, "data", "sentiment_sample.csv")
-
 
 # ============================
 #  HELPERS
@@ -58,7 +54,6 @@ def read_timeseries():
 
     df = pd.read_csv(DATA_CSV)
 
-    # Normalize date column
     if "Date" not in df.columns:
         return pd.DataFrame()
 
@@ -72,7 +67,7 @@ def read_timeseries():
 
 
 def latest_and_prev_prices(df):
-    """Return last and previous row price series."""
+    """Return last and previous row price series and last date."""
     if df.empty:
         return pd.Series(dtype=float), pd.Series(dtype=float), None
 
@@ -111,11 +106,9 @@ def api_nifty():
         return jsonify({"error": "No data"}), 404
 
     df["NIFTY"] = df.drop(columns=["Date"]).mean(axis=1)
-
     latest = df.iloc[-1]["NIFTY"]
     prev = df.iloc[-2]["NIFTY"]
     change_pct = (latest - prev) / prev * 100
-
     date = df.iloc[-1]["Date"].strftime("%d-%m-%Y")
 
     return jsonify({
@@ -175,7 +168,6 @@ def api_market_movers():
         })
 
     movers_df = pd.DataFrame(movers)
-
     gainers = movers_df.sort_values("pct_change", ascending=False).head(10).to_dict("records")
     losers = movers_df.sort_values("pct_change", ascending=True).head(10).to_dict("records")
 
@@ -183,7 +175,7 @@ def api_market_movers():
 
 
 # ===========================================================
-#  PORTFOLIO (simple synthetic holdings)
+#  PORTFOLIO (synthetic)
 # ===========================================================
 @app.route("/api/portfolio")
 def api_portfolio():
@@ -196,7 +188,11 @@ def api_portfolio():
     rows = []
     for sym in last.index:
         ltp = float(last[sym])
-        first_price = pd.to_numeric(df[sym], errors="coerce").dropna().iloc[0]
+        series = pd.to_numeric(df[sym], errors="coerce").dropna()
+        if series.empty:
+            continue
+
+        first_price = series.iloc[0]
 
         invested = first_price * 1
         current_value = ltp * 1
@@ -259,6 +255,9 @@ def compute_risk_metrics():
             continue
 
         daily = series.pct_change().dropna()
+        if daily.empty:
+            continue
+
         mean_ret = daily.mean()
         vol = daily.std()
 
@@ -287,73 +286,131 @@ def api_dsfm_top_stocks():
 
 
 # ===========================================================
-#  FORECAST (ARIMA on log-returns)
+#  FORECAST MODELS (ARIMA, SARIMA, GARCH on log-returns)
 # ===========================================================
-def forecast_arima(symbol, steps=30):
+forecast_cache = {}
+
+
+def forecast_models(symbol, steps=30):
+    if symbol in forecast_cache:
+        return forecast_cache[symbol]
+
     s = get_price_series(symbol)
-    if s.empty:
+    if s.empty or len(s) < 2:
         return None
 
-    series = s["Price"]
+    prices = s["Price"]
+    if prices.empty or len(prices) < 2:
+        return None
 
-    # ARIMA on prices, ARIMA(p=5, d=1, q=0) is a stable general-purpose model
-    model = ARIMA(series, order=(5, 1, 0))
-    fit = model.fit()
+    last_date = s["Date"].iloc[-1]
 
-    # Forecast future prices
-    forecast = fit.forecast(steps=steps)
+    # Log returns (stationary)
+    returns = np.log(prices).diff().dropna()
+    if returns.empty:
+        return None
 
-    last_price = series.iloc[-1]
+    # Use values to avoid weird index warnings
+    r_values = returns.values
 
-    future_dates = [
-        s["Date"].iloc[-1] + timedelta(days=i+1)
-        for i in range(steps)
-    ]
+    # ---------- ARIMA ----------
+    arima_model = auto_arima(
+        r_values,
+        seasonal=False,
+        stepwise=True,
+        suppress_warnings=True,
+        error_action="ignore"
+    )
+    arima_r = arima_model.predict(n_periods=steps)
+    arima_prices = prices.iloc[-1] * np.exp(np.cumsum(arima_r))
+    arima_prices = np.asarray(arima_prices)
 
-    # Last forecasted price decides direction
-    direction = "UP" if forecast.iloc[-1] > last_price else "DOWN"
+    # ---------- SARIMA ----------
+    sarima_model = auto_arima(
+        r_values,
+        seasonal=True,
+        m=12,
+        stepwise=True,
+        suppress_warnings=True,
+        error_action="ignore"
+    )
+    sarima_r = sarima_model.predict(n_periods=steps)
+    sarima_prices = prices.iloc[-1] * np.exp(np.cumsum(sarima_r))
+    sarima_prices = np.asarray(sarima_prices)
 
-    return {
-        "symbol": symbol,
-        "last_actual": float(last_price),
-        "future": [
+    # ---------- GARCH ----------
+    garch_mod = arch_model(r_values, vol="Garch", p=1, q=1, mean="Zero")
+    garch_fit = garch_mod.fit(disp="off")
+
+    # Forecast variance specific to the stock
+    garch_forecast = garch_fit.forecast(horizon=steps)
+    garch_var = garch_forecast.variance.values[-1]
+
+    # Generate random noise based on stock-specific variance
+    garch_r = np.random.normal(0, np.sqrt(garch_var), steps)
+
+    # Convert log returns to prices
+    garch_prices = prices.iloc[-1] * np.exp(np.cumsum(garch_r))
+    garch_prices = np.asarray(garch_prices)
+
+    future_dates = [last_date + timedelta(days=i + 1) for i in range(steps)]
+
+    direction = "UP" if len(arima_prices) > 0 and arima_prices[-1] > prices.iloc[-1] else "DOWN"
+
+    forecast_cache[symbol] = {
+        "arima": [
             {"date": d.strftime("%Y-%m-%d"), "price": float(p)}
-            for d, p in zip(future_dates, forecast)
+            for d, p in zip(future_dates, arima_prices)
+        ],
+        "sarima": [
+            {"date": d.strftime("%Y-%m-%d"), "price": float(p)}
+            for d, p in zip(future_dates, sarima_prices)
+        ],
+        "garch": [
+            {"date": d.strftime("%Y-%m-%d"), "price": float(p)}
+            for d, p in zip(future_dates, garch_prices)
         ],
         "direction": direction
     }
+    return forecast_cache[symbol]
 
 
 @app.route("/api/dsfm/forecast/<symbol>")
 def api_dsfm_forecast(symbol):
-    data = forecast_arima(symbol)
-    if not data:
+    forecast = forecast_models(symbol)
+    if not forecast:
         return jsonify({"error": "No forecast"}), 404
-    return jsonify(data)
 
+    return jsonify({
+        "symbol": symbol,
+        "forecast_direction": forecast["direction"],
+        "forecast_arima": forecast["arima"],
+        "forecast_sarima": forecast["sarima"],
+        "forecast_garch": forecast["garch"],
+    })
 
 
 # ===========================================================
-#  SENTIMENT (with news display integration)
+#  SENTIMENT (newsdata.io + TextBlob)
 # ===========================================================
-
 load_dotenv()
-NEWS_API_KEY = os.getenv("NEWSCATCHER_API_KEY")
+NEWS_API_KEY = os.getenv("NEWSCATCHER_API_KEY")  # make sure .env has this
+
 
 def get_dynamic_sentiment(symbol):
     clean_symbol = symbol.split("_")[-1].upper()
-    keyword = SYMBOL_MAP.get(clean_symbol, clean_symbol)  # Extract keyword from symbol
+    keyword = SYMBOL_MAP.get(clean_symbol, clean_symbol)
 
     url = "https://newsdata.io/api/1/news"
     params = {
         "apikey": NEWS_API_KEY,
         "q": keyword,
         "language": "en",
-        "country": "in"
+        "country": "in",
     }
 
     try:
-        res = requests.get(url, params=params)
+        res = requests.get(url, params=params, timeout=10)
         data = res.json()
 
         if "results" not in data or len(data["results"]) == 0:
@@ -369,28 +426,27 @@ def get_dynamic_sentiment(symbol):
 
         for article in data["results"]:
             title = article.get("title", "")
-            desc = article.get("description", "")
-            published_date = article.get("published_date", "")
+            desc = article.get("description", "") or ""
+            published = article.get("pubDate", "")
 
-            # Combine title and description for sentiment analysis
-            text = title + " " + desc
+            text = f"{title} {desc}"
             polarity = TextBlob(text).sentiment.polarity
             sentiments.append(polarity)
 
-            # Add article details to the news list
             news_list.append({
                 "title": title,
                 "description": desc,
-                "published_date": published_date,
+                "published": published,
                 "sentiment_score": round(polarity, 3)
             })
 
         score = sum(sentiments) / len(sentiments) if sentiments else 0.0
-        label = (
-            "POSITIVE" if score > 0.1 else
-            "NEGATIVE" if score < -0.1 else
-            "NEUTRAL"
-        )
+        if score > 0.1:
+            label = "POSITIVE"
+        elif score < -0.1:
+            label = "NEGATIVE"
+        else:
+            label = "NEUTRAL"
 
         return {
             "symbol": symbol,
@@ -449,13 +505,9 @@ def api_most_bought():
         "pct_change": most_bought["pct_change"]
     })
 
-# ========= helpers for market insights =========
 
+# ========= helpers for market insights =========
 def _pct_change_over_days(df: pd.DataFrame, sym: str, days: int):
-    """
-    Percentage change over `days` for a single symbol.
-    Returns None if not enough data.
-    """
     series = pd.to_numeric(df[sym], errors="coerce").dropna()
     if len(series) <= days:
         return None
@@ -470,23 +522,14 @@ def _pct_change_over_days(df: pd.DataFrame, sym: str, days: int):
 
 @app.route("/api/market-insights")
 def api_market_insights():
-    """
-    Deep Market Insights on top of market_movers:
-    - Market breadth (advancers vs decliners)
-    - Sector-wise breadth & average move
-    - Momentum table (5-day & 20-day)
-    """
     df = read_timeseries()
     if df.empty:
         return jsonify({"error": "No data"}), 404
 
-    # -------------- breadth for the last day --------------
     last, prev, last_date = latest_and_prev_prices(df)
-    advancers = 0
-    decliners = 0
-    unchanged = 0
-
+    advancers = decliners = unchanged = 0
     breadth_rows = []
+
     for sym in last.index:
         if pd.isna(last[sym]) or pd.isna(prev[sym]):
             continue
@@ -505,10 +548,7 @@ def api_market_insights():
 
     adv_decl_ratio = (advancers / decliners) if decliners != 0 else None
 
-    # -------------- sector-wise stats --------------
-    # Sector = text before first "_", e.g. "AUTO_MARUTI" -> "AUTO"
     sector_stats = {}
-
     for row in breadth_rows:
         sym = row["symbol"]
         pct = row["pct_change"]
@@ -546,7 +586,6 @@ def api_market_insights():
             "avg_move": round(avg_move, 2),
         })
 
-    # -------------- momentum table (5d & 20d) --------------
     price_cols = [c for c in df.columns if c != "Date"]
     momentum_rows = []
 
@@ -556,9 +595,7 @@ def api_market_insights():
         if pct_5d is None or pct_20d is None:
             continue
 
-        # simple momentum score: recent 5d has double weight
         score = 2 * pct_5d + pct_20d
-
         momentum_rows.append({
             "symbol": sym,
             "pct_5d": round(pct_5d, 2),
@@ -566,10 +603,8 @@ def api_market_insights():
             "momentum_score": round(score, 2),
         })
 
-    # top 10 strongest momentum
     momentum_rows = sorted(momentum_rows, key=lambda x: x["momentum_score"], reverse=True)[:10]
 
-    # -------------- final payload --------------
     return jsonify({
         "date": last_date,
         "breadth": {
@@ -584,30 +619,26 @@ def api_market_insights():
 
 
 # ===========================================================
-#  FINAL DECISION ENGINE (history + ARIMA only)
+#  FINAL DECISION ENGINE (history + ARIMA/SARIMA/GARCH + sentiment)
 # ===========================================================
 @app.route("/api/dsfm/decision/<symbol>")
 def api_dsfm_decision(symbol):
-
-    # Run ARIMA forecast
-    arima = forecast_arima(symbol)
-
-    if not arima:
+    forecast = forecast_models(symbol)
+    if not forecast:
         return jsonify({"error": "No forecast"}), 404
 
-    # Get sentiment (FIXED)
     sentiment = get_dynamic_sentiment(symbol)
-    direction = arima["direction"]
     s_label = sentiment["label"]
+    direction = forecast["direction"]
 
-    # Build 800-day historical series
+    # History for last ~800 days
     history_df = get_price_series(symbol).tail(800)
     history = [
         {"date": d.strftime("%Y-%m-%d"), "price": float(p)}
         for d, p in zip(history_df["Date"], history_df["Price"])
     ]
 
-    # Final decision rule
+    # Simple rule
     if direction == "UP" and s_label == "POSITIVE":
         signal = "BUY"
     elif direction == "UP" and s_label == "NEGATIVE":
@@ -623,15 +654,13 @@ def api_dsfm_decision(symbol):
         "forecast_direction": direction,
         "sentiment_label": s_label,
         "sentiment_score": sentiment["score"],
+        "news": sentiment.get("news", []),
 
-        # Forecast used by frontend
-        "forecast": arima["future"],
-
-        # For compatibility (frontend can ignore these)
-        "forecast_arima": arima["future"],
-        "forecast_garch": [],
-
-        "history": history
+        "forecast": forecast["arima"],        # main forecast
+        "forecast_arima": forecast["arima"],
+        "forecast_sarima": forecast["sarima"],
+        "forecast_garch": forecast["garch"],
+        "history": history,
     })
 
 

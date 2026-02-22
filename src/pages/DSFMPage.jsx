@@ -44,28 +44,53 @@ export default function DSFMPage() {
   // ----------------------------------------
   // MERGED CHART DATA
   // ----------------------------------------
-  const combinedData = decision
-    ? [
-        ...(decision.history || []).map((d) => ({
-          date: d.date,
-          price_history: d.price,
-          price_arima: null,
-          price_garch: null,
-        })),
-        ...(decision.forecast_arima || []).map((d) => ({
-          date: d.date,
-          price_history: null,
-          price_arima: d.price,
-          price_garch: null,
-        })),
-        ...(decision.forecast_garch || []).map((d) => ({
-          date: d.date,
-          price_history: null,
-          price_arima: null,
-          price_garch: d.price,
-        })),
-      ].sort((a, b) => new Date(a.date) - new Date(b.date))
-    : [];
+ const combinedData = decision
+  ? [
+      ...(decision.history || []).map(d => ({
+        date: d.date,
+        price_history: d.price,
+        price_arima: null,
+        price_sarima: null,
+        price_garch: null,
+      })),
+      ...(decision.forecast_arima || []).map(d => ({
+        date: d.date,
+        price_history: null,
+        price_arima: d.price,
+        price_sarima: null,
+        price_garch: null,
+      })),
+      ...(decision.forecast_sarima || []).map(d => ({
+        date: d.date,
+        price_history: null,
+        price_arima: null,
+        price_sarima: d.price,
+        price_garch: null,
+      })),
+      ...(decision.forecast_garch || []).map(d => ({
+        date: d.date,
+        price_history: null,
+        price_arima: null,
+        price_sarima: null,
+        price_garch: d.price,
+      })),
+    ]
+      .reduce((acc, curr) => {
+        const existing = acc.find(item => item.date === curr.date);
+        if (existing) {
+          // Merge values into the existing object
+          Object.keys(curr).forEach(key => {
+            if (key !== "date" && curr[key] !== null) {
+              existing[key] = curr[key];
+            }
+          });
+        } else {
+          acc.push(curr);
+        }
+        return acc;
+      }, [])
+      .sort((a, b) => new Date(a.date) - new Date(b.date))
+  : [];
 
   // ----------------------------------------
   // SAFE NEWS ARRAY
@@ -73,6 +98,7 @@ export default function DSFMPage() {
   const newsList = decision?.news ?? [];
 
   console.log("Decision object:", decision);
+  console.log("Combined Data:", combinedData);
 
   return (
     <div className="space-y-6">
@@ -154,35 +180,78 @@ export default function DSFMPage() {
                   <Tooltip
                     contentStyle={{ backgroundColor: "#111827", border: "none" }}
                     labelStyle={{ color: "#E5E7EB" }}
+                    formatter={(value, name) => {
+                      let labelColor = "";
+                      let labelName = "";
+
+                      // Map dataKey to label and color
+                      switch (name) {
+                        case "price_history":
+                          labelColor = "#60A5FA"; // Blue for History
+                          labelName = "History";
+                          break;
+                        case "price_arima":
+                          labelColor = "#FACC15"; // Yellow for ARIMA
+                          labelName = "ARIMA";
+                          break;
+                        case "price_sarima":
+                          labelColor = "#FB923C"; // Orange for SARIMA
+                          labelName = "SARIMA";
+                          break;
+                        case "price_garch":
+                          labelColor = "#34D399"; // Green for GARCH
+                          labelName = "GARCH";
+                          break;
+                        default:
+                          labelColor = "#9CA3AF"; // Default color
+                          labelName = name;
+                      }
+
+                      return [
+                        `₹${Number(value).toFixed(2)}`, // Format value as currency
+                        <span style={{ color: labelColor }}>{labelName}</span>, // Display name with color
+                      ];
+                    }}
                   />
 
+                  {/* HISTORY (Blue) */}
                   <Line
                     type="monotone"
                     dataKey="price_history"
                     stroke="#60A5FA"
                     strokeWidth={2}
                     dot={false}
-                    name="Historical"
+                    connectNulls={true}
                   />
 
+                  {/* ARIMA (Yellow) */}
                   <Line
                     type="monotone"
                     dataKey="price_arima"
                     stroke="#FACC15"
                     strokeWidth={2}
-                    strokeDasharray="4 4"
-                    dot={{ r: 3, stroke: "#FDE047", strokeWidth: 2 }}
-                    name="ARIMA forecast"
+                    dot={false}
+                    connectNulls={true}
                   />
 
+                  {/* SARIMA (Orange) */}
+                  <Line
+                    type="monotone"
+                    dataKey="price_sarima"
+                    stroke="#FB923C"
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls={true}
+                  />
+
+                  {/* GARCH (Green) */}
                   <Line
                     type="monotone"
                     dataKey="price_garch"
                     stroke="#34D399"
                     strokeWidth={2}
-                    strokeDasharray="2 6"
-                    dot={{ r: 3, stroke: "#6EE7B7", strokeWidth: 2 }}
-                    name="ARIMA+GARCH forecast"
+                    dot={false}
+                    connectNulls={true}
                   />
                 </LineChart>
               </ResponsiveContainer>

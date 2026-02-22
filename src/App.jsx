@@ -6,6 +6,7 @@ import DSFMPage from "./pages/DSFMPage";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 import MarketOverview from "./pages/MarketOverview";
+import MarketHeatmap from "./components/MarketHeatMap";
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
             <Route path="/marketmovers" element={<MarketPage />} />
             <Route path="/dsfm" element={<DSFMPage />} />
             <Route path="/market" element={<MarketOverview />} />
+            <Route path="/market/heatmap" element={<MarketHeatmap />} />
           </Routes>
         </main>
       </div>
