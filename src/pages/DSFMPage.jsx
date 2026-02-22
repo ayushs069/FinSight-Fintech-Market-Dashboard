@@ -1,4 +1,5 @@
 // src/pages/DSFMPage.jsx
+
 import { useEffect, useState } from "react";
 import axios from "axios";
 import {
@@ -40,23 +41,38 @@ export default function DSFMPage() {
     }
   }
 
-  // ----------------------------
-  // ✅ MERGED TIMELINE (HISTORY + FORECAST)
-  // ----------------------------
+  // ----------------------------------------
+  // MERGED CHART DATA
+  // ----------------------------------------
   const combinedData = decision
     ? [
-        ...decision.history.map((d) => ({
+        ...(decision.history || []).map((d) => ({
           date: d.date,
           price_history: d.price,
-          price_forecast: null,
+          price_arima: null,
+          price_garch: null,
         })),
-        ...decision.forecast.map((d) => ({
+        ...(decision.forecast_arima || []).map((d) => ({
           date: d.date,
           price_history: null,
-          price_forecast: d.price,
+          price_arima: d.price,
+          price_garch: null,
+        })),
+        ...(decision.forecast_garch || []).map((d) => ({
+          date: d.date,
+          price_history: null,
+          price_arima: null,
+          price_garch: d.price,
         })),
       ].sort((a, b) => new Date(a.date) - new Date(b.date))
     : [];
+
+  // ----------------------------------------
+  // SAFE NEWS ARRAY
+  // ----------------------------------------
+  const newsList = decision?.news ?? [];
+
+  console.log("Decision object:", decision);
 
   return (
     <div className="space-y-6">
@@ -66,16 +82,17 @@ export default function DSFMPage() {
           DSFM Analytics – Smart Stock Screener
         </h1>
         <p className="text-gray-400 text-sm">
-          Past reality (Sharpe & volatility) → Future forecast (ARIMA) → Market
-          mood (sentiment) → Final BUY / WAIT / AVOID signal.
+          Past reality (Sharpe & volatility) → Future forecast (ARIMA + GARCH) →
+          Market mood (sentiment) → Final BUY / WAIT / AVOID signal.
         </p>
       </div>
 
-      {/* Top stocks table */}
+      {/* Top 10 table */}
       <div className="bg-[#1B2029] p-4 rounded-lg">
         <h2 className="text-lg text-white mb-3">
           Top 10 NIFTY Stocks (Risk-adjusted)
         </h2>
+
         <table className="w-full text-sm text-gray-300">
           <thead>
             <tr className="border-b border-gray-700 text-gray-400">
@@ -86,8 +103,9 @@ export default function DSFMPage() {
               <th className="text-right">Action</th>
             </tr>
           </thead>
+
           <tbody>
-            {topStocks.map((s, idx) => (
+            {topStocks?.map((s, idx) => (
               <tr
                 key={idx}
                 className={`border-b border-gray-800 hover:bg-[#242A36] ${
@@ -98,6 +116,7 @@ export default function DSFMPage() {
                 <td className="text-right">{s.annual_return.toFixed(2)}</td>
                 <td className="text-right">{s.volatility.toFixed(2)}</td>
                 <td className="text-right">{s.sharpe.toFixed(2)}</td>
+
                 <td className="text-right">
                   <button
                     onClick={() => handleSelect(s.symbol)}
@@ -108,6 +127,7 @@ export default function DSFMPage() {
                 </td>
               </tr>
             ))}
+
             {topStocks.length === 0 && (
               <tr>
                 <td className="py-4 text-gray-400">No data loaded yet</td>
@@ -117,10 +137,10 @@ export default function DSFMPage() {
         </table>
       </div>
 
-      {/* Forecast + Sentiment panel */}
+      {/* Forecast + Sentiment */}
       {decision && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Forecast Chart */}
+          {/* ========= FORECAST CHART ========= */}
           <div className="bg-[#1B2029] p-4 rounded-lg">
             <h3 className="text-white text-lg mb-2">
               {decision.symbol} – Price History + 30-Day Forecast
@@ -129,20 +149,13 @@ export default function DSFMPage() {
             {combinedData.length > 0 ? (
               <ResponsiveContainer width="100%" height={320}>
                 <LineChart data={combinedData}>
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: "#9CA3AF", fontSize: 10 }}
-                  />
+                  <XAxis dataKey="date" tick={{ fill: "#9CA3AF", fontSize: 10 }} />
                   <YAxis tick={{ fill: "#9CA3AF", fontSize: 10 }} />
                   <Tooltip
-                    contentStyle={{
-                      backgroundColor: "#111827",
-                      border: "none",
-                    }}
+                    contentStyle={{ backgroundColor: "#111827", border: "none" }}
                     labelStyle={{ color: "#E5E7EB" }}
                   />
 
-                  {/* History line */}
                   <Line
                     type="monotone"
                     dataKey="price_history"
@@ -152,15 +165,24 @@ export default function DSFMPage() {
                     name="Historical"
                   />
 
-                  {/* Forecast line */}
                   <Line
                     type="monotone"
-                    dataKey="price_forecast"
+                    dataKey="price_arima"
                     stroke="#FACC15"
                     strokeWidth={2}
-                    strokeDasharray="5 5"
-                    dot={{ r: 4, stroke: "#FDE047", strokeWidth: 2 }}
-                    name="Forecast"
+                    strokeDasharray="4 4"
+                    dot={{ r: 3, stroke: "#FDE047", strokeWidth: 2 }}
+                    name="ARIMA forecast"
+                  />
+
+                  <Line
+                    type="monotone"
+                    dataKey="price_garch"
+                    stroke="#34D399"
+                    strokeWidth={2}
+                    strokeDasharray="2 6"
+                    dot={{ r: 3, stroke: "#6EE7B7", strokeWidth: 2 }}
+                    name="ARIMA+GARCH forecast"
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -169,12 +191,13 @@ export default function DSFMPage() {
             )}
           </div>
 
-          {/* Sentiment + Signal */}
+          {/* ========= SENTIMENT PANEL ========= */}
           <div className="bg-[#1B2029] p-4 rounded-lg flex flex-col justify-between">
             <div>
               <h3 className="text-white text-lg mb-3">Sentiment & Decision</h3>
+
               <p className="text-gray-300 mb-2">
-                <span className="text-gray-400">Sentiment label:</span>{" "}
+                <span className="text-gray-400">Sentiment label: </span>
                 <span
                   className={
                     decision.sentiment_label === "POSITIVE"
@@ -187,17 +210,55 @@ export default function DSFMPage() {
                   {decision.sentiment_label}
                 </span>
               </p>
+
               <p className="text-gray-300 mb-4">
                 <span className="text-gray-400">Sentiment score:</span>{" "}
-                {decision.sentiment_score.toFixed(3)}
+                {Number(decision.sentiment_score).toFixed(3)}
               </p>
+
+              {/* ========= FIXED NEWS FEED ========= */}
+              <h4 className="text-white text-md mt-4 mb-2">Latest News</h4>
+
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                {newsList.length > 0 ? (
+                  newsList.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="bg-[#111827] p-2 rounded border border-gray-700"
+                    >
+                      <p className="text-gray-200 text-sm">{item.title}</p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {item.published_date?.slice(0, 10)}
+                      </p>
+                      <p className="text-xs mt-1">
+                        Sentiment:{" "}
+                        <span
+                          className={
+                            item.sentiment_score > 0.1
+                              ? "text-green-400"
+                              : item.sentiment_score < -0.1
+                              ? "text-red-400"
+                              : "text-yellow-300"
+                          }
+                        >
+                          {Number(item.sentiment_score).toFixed(3)}
+                        </span>
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-gray-500 text-sm">No recent news found.</p>
+                )}
+              </div>
             </div>
 
+            {/* ========= FINAL SIGNAL ========= */}
             <div>
               <p className="text-gray-400 mb-1 text-sm">
                 Combined rule: Forecast ({decision.forecast_direction}) +
                 Sentiment ({decision.sentiment_label})
               </p>
+
               <p className="text-xl font-bold">
                 Final Signal:{" "}
                 <span
@@ -214,6 +275,7 @@ export default function DSFMPage() {
                   {decision.signal}
                 </span>
               </p>
+
               <p className="text-xs text-gray-500 mt-2">
                 * Educational demo only – not real trading advice.
               </p>

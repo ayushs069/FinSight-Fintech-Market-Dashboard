@@ -5,12 +5,39 @@ import pandas as pd
 import numpy as np
 import os
 from statsmodels.tsa.arima.model import ARIMA
+from arch import arch_model
 from math import sqrt
 from datetime import timedelta
 from textblob import TextBlob
+from dotenv import load_dotenv
+import requests
+
 
 app = Flask(__name__)
 CORS(app)
+
+# ============================
+#  SYMBOL → REAL COMPANY NAME MAP
+# ============================
+SYMBOL_MAP = {
+    "ASIANPAINT": "Asian Paints",
+    "HDFCBANK": "HDFC Bank",
+    "NTPC": "NTPC",
+    "MARUTI": "Maruti Suzuki",
+    "WIPRO": "Wipro",
+    "SUNPHARMA": "Sun Pharma",
+    "ULTRACEMCO": "Ultratech Cement",
+    "SHREECEM": "Shree Cement",
+    "TECHM": "Tech Mahindra",
+    "TATAMTRDVR": "Tata Motors DVR",
+    "HINDUNILVR": "Hindustan Unilever",
+    "HINDUNILVR": "HUL",  # optional alias
+    "BAJAJ-AUTO": "Bajaj Auto",
+    "BAJAJAUTO": "Bajaj Auto",
+    "M&M": "Mahindra and Mahindra",
+    "MM": "Mahindra and Mahindra",
+    "LT": "Larsen and Toubro",
+}
 
 # ============================
 #  PATHS
@@ -39,11 +66,9 @@ def read_timeseries():
     df = df.dropna(how="all", subset=[c for c in df.columns if c != "Date"])
     df = df.sort_values("Date").reset_index(drop=True)
 
-# FIX: Fill missing stock prices
+    # Fill missing stock prices
     df = df.ffill().bfill()
-
     return df
-
 
 
 def latest_and_prev_prices(df):
@@ -63,13 +88,13 @@ def latest_and_prev_prices(df):
 
 
 def get_price_series(symbol):
+    """Return a clean Date + Price series for one symbol."""
     df = read_timeseries()
     if df.empty or symbol not in df.columns:
         return pd.DataFrame()
 
     df = df[["Date", symbol]].dropna()
     df = df.rename(columns={symbol: "Price"})
-
     df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
     df = df.dropna()
 
@@ -101,7 +126,7 @@ def api_nifty():
 
 
 # ===========================================================
-#  STOCK API
+#  STOCK API (single symbol snapshot)
 # ===========================================================
 @app.route("/api/stock/<symbol>")
 def api_stock(symbol):
@@ -158,7 +183,7 @@ def api_market_movers():
 
 
 # ===========================================================
-#  PORTFOLIO API
+#  PORTFOLIO (simple synthetic holdings)
 # ===========================================================
 @app.route("/api/portfolio")
 def api_portfolio():
@@ -211,7 +236,6 @@ def api_nifty_history():
     df = read_timeseries()
     df["NIFTY"] = df.drop(columns=["Date"]).mean(axis=1)
     df = df[["Date", "NIFTY"]].tail(200)
-
     return jsonify(df.to_dict("records"))
 
 
@@ -232,8 +256,7 @@ def compute_risk_metrics():
     for sym in price_cols:
         series = pd.to_numeric(df[sym], errors="coerce").dropna()
         if len(series) < 300:
-          continue
-
+            continue
 
         daily = series.pct_change().dropna()
         mean_ret = daily.mean()
@@ -264,7 +287,7 @@ def api_dsfm_top_stocks():
 
 
 # ===========================================================
-#  FORECAST (ARIMA)
+#  FORECAST (ARIMA on log-returns)
 # ===========================================================
 def forecast_arima(symbol, steps=30):
     s = get_price_series(symbol)
@@ -273,38 +296,32 @@ def forecast_arima(symbol, steps=30):
 
     series = s["Price"]
 
-    # Use log returns instead of price
-    log_returns = np.log(series / series.shift(1)).dropna()
-
-    model = ARIMA(log_returns, order=(1, 0, 1))
+    # ARIMA on prices, ARIMA(p=5, d=1, q=0) is a stable general-purpose model
+    model = ARIMA(series, order=(5, 1, 0))
     fit = model.fit()
 
-    forecast_returns = fit.forecast(steps=steps)
+    # Forecast future prices
+    forecast = fit.forecast(steps=steps)
+
     last_price = series.iloc[-1]
 
-    # Convert back to price
-    forecast_prices = []
-    price = last_price
-    for r in forecast_returns:
-        price = price * np.exp(r)
-        forecast_prices.append(price)
-
     future_dates = [
-        s["Date"].iloc[-1] + timedelta(days=i + 1) for i in range(steps)
+        s["Date"].iloc[-1] + timedelta(days=i+1)
+        for i in range(steps)
     ]
 
-    direction = "UP" if forecast_prices[-1] > last_price else "DOWN"
+    # Last forecasted price decides direction
+    direction = "UP" if forecast.iloc[-1] > last_price else "DOWN"
 
     return {
         "symbol": symbol,
         "last_actual": float(last_price),
         "future": [
             {"date": d.strftime("%Y-%m-%d"), "price": float(p)}
-            for d, p in zip(future_dates, forecast_prices)
+            for d, p in zip(future_dates, forecast)
         ],
         "direction": direction
     }
-
 
 
 @app.route("/api/dsfm/forecast/<symbol>")
@@ -315,88 +332,282 @@ def api_dsfm_forecast(symbol):
     return jsonify(data)
 
 
+
 # ===========================================================
-#  SENTIMENT
+#  SENTIMENT (with news display integration)
 # ===========================================================
-def get_sentiment(symbol):
-    """
-    Returns sentiment for a stock using a sentiment CSV.
-    Handles:
-    - missing file
-    - missing symbol in file
-    - sector prefix (e.g., CDUR_ASIANPAINT → ASIANPAINT)
-    """
 
-    sym_clean = symbol.split("_")[-1].upper()  # clean symbol name
+load_dotenv()
+NEWS_API_KEY = os.getenv("NEWSCATCHER_API_KEY")
 
-    # If no sentiment CSV → return NEUTRAL
-    if not os.path.exists(SENTIMENT_CSV):
-        return {"symbol": symbol, "score": 0.0, "label": "NEUTRAL"}
+def get_dynamic_sentiment(symbol):
+    clean_symbol = symbol.split("_")[-1].upper()
+    keyword = SYMBOL_MAP.get(clean_symbol, clean_symbol)  # Extract keyword from symbol
 
-    # Load sentiment CSV safely
-    sdf = pd.read_csv(SENTIMENT_CSV)
-    sdf.columns = [c.strip().lower() for c in sdf.columns]
+    url = "https://newsdata.io/api/1/news"
+    params = {
+        "apikey": NEWS_API_KEY,
+        "q": keyword,
+        "language": "en",
+        "country": "in"
+    }
 
-    # Normalize symbol column
-    if "symbol" not in sdf.columns:
-        return {"symbol": symbol, "score": 0.0, "label": "NEUTRAL"}
+    try:
+        res = requests.get(url, params=params)
+        data = res.json()
 
-    # Filter rows for this stock
-    sdf = sdf[sdf["symbol"].str.upper() == sym_clean]
+        if "results" not in data or len(data["results"]) == 0:
+            return {
+                "symbol": symbol,
+                "score": 0.0,
+                "label": "NEUTRAL",
+                "news": []
+            }
 
-    # No sentiment for this stock → return neutral
-    if sdf.empty:
-        return {"symbol": symbol, "score": 0.0, "label": "NEUTRAL"}
+        sentiments = []
+        news_list = []
 
-    # Case 1: direct sentiment scores
-    if "sentiment_score" in sdf.columns:
-        score = float(sdf["sentiment_score"].mean())
-    # Case 2: compute polarity from headlines
-    elif "headline" in sdf.columns:
-        from textblob import TextBlob
-        scores = [TextBlob(str(h)).sentiment.polarity for h in sdf["headline"]]
-        score = float(np.mean(scores)) if scores else 0.0
-    else:
-        score = 0.0
+        for article in data["results"]:
+            title = article.get("title", "")
+            desc = article.get("description", "")
+            published_date = article.get("published_date", "")
 
-    # Convert score → label
-    if score > 0.1:
-        label = "POSITIVE"
-    elif score < -0.1:
-        label = "NEGATIVE"
-    else:
-        label = "NEUTRAL"
+            # Combine title and description for sentiment analysis
+            text = title + " " + desc
+            polarity = TextBlob(text).sentiment.polarity
+            sentiments.append(polarity)
 
-    return {"symbol": symbol, "score": score, "label": label}
+            # Add article details to the news list
+            news_list.append({
+                "title": title,
+                "description": desc,
+                "published_date": published_date,
+                "sentiment_score": round(polarity, 3)
+            })
 
+        score = sum(sentiments) / len(sentiments) if sentiments else 0.0
+        label = (
+            "POSITIVE" if score > 0.1 else
+            "NEGATIVE" if score < -0.1 else
+            "NEUTRAL"
+        )
+
+        return {
+            "symbol": symbol,
+            "score": round(score, 3),
+            "label": label,
+            "news": news_list
+        }
+
+    except Exception as e:
+        print("Sentiment Error:", e)
+        return {
+            "symbol": symbol,
+            "score": 0.0,
+            "label": "NEUTRAL",
+            "news": []
+        }
 
 
 @app.route("/api/dsfm/sentiment/<symbol>")
 def api_dsfm_sentiment(symbol):
-    return jsonify(get_sentiment(symbol))
+    return jsonify(get_dynamic_sentiment(symbol))
 
 
 # ===========================================================
-#  FINAL DECISION ENGINE
+#  MOST BOUGHT STOCK (simple proxy)
+# ===========================================================
+@app.route("/api/most-bought")
+def api_most_bought():
+    df = read_timeseries()
+    if df.empty:
+        return jsonify({"most_bought": None})
+
+    last, prev, date = latest_and_prev_prices(df)
+
+    changes = []
+    for sym in last.index:
+        if pd.isna(last[sym]) or pd.isna(prev[sym]):
+            continue
+        pct = (last[sym] - prev[sym]) / prev[sym] * 100
+        changes.append({
+            "symbol": sym,
+            "ltp": float(last[sym]),
+            "pct_change": round(pct, 2)
+        })
+
+    if not changes:
+        return jsonify({"most_bought": None})
+
+    df_changes = pd.DataFrame(changes)
+    most_bought = df_changes.sort_values("pct_change", ascending=False).iloc[0]
+
+    return jsonify({
+        "date": date,
+        "symbol": most_bought["symbol"],
+        "ltp": most_bought["ltp"],
+        "pct_change": most_bought["pct_change"]
+    })
+
+# ========= helpers for market insights =========
+
+def _pct_change_over_days(df: pd.DataFrame, sym: str, days: int):
+    """
+    Percentage change over `days` for a single symbol.
+    Returns None if not enough data.
+    """
+    series = pd.to_numeric(df[sym], errors="coerce").dropna()
+    if len(series) <= days:
+        return None
+
+    latest = series.iloc[-1]
+    past = series.iloc[-(days + 1)]
+    if past == 0 or pd.isna(latest) or pd.isna(past):
+        return None
+
+    return float((latest - past) / past * 100.0)
+
+
+@app.route("/api/market-insights")
+def api_market_insights():
+    """
+    Deep Market Insights on top of market_movers:
+    - Market breadth (advancers vs decliners)
+    - Sector-wise breadth & average move
+    - Momentum table (5-day & 20-day)
+    """
+    df = read_timeseries()
+    if df.empty:
+        return jsonify({"error": "No data"}), 404
+
+    # -------------- breadth for the last day --------------
+    last, prev, last_date = latest_and_prev_prices(df)
+    advancers = 0
+    decliners = 0
+    unchanged = 0
+
+    breadth_rows = []
+    for sym in last.index:
+        if pd.isna(last[sym]) or pd.isna(prev[sym]):
+            continue
+
+        change = last[sym] - prev[sym]
+        pct = (change / prev[sym]) * 100.0 if prev[sym] != 0 else 0.0
+
+        if change > 0:
+            advancers += 1
+        elif change < 0:
+            decliners += 1
+        else:
+            unchanged += 1
+
+        breadth_rows.append({"symbol": sym, "pct_change": pct})
+
+    adv_decl_ratio = (advancers / decliners) if decliners != 0 else None
+
+    # -------------- sector-wise stats --------------
+    # Sector = text before first "_", e.g. "AUTO_MARUTI" -> "AUTO"
+    sector_stats = {}
+
+    for row in breadth_rows:
+        sym = row["symbol"]
+        pct = row["pct_change"]
+        sector = sym.split("_", 1)[0] if "_" in sym else "OTHER"
+
+        if sector not in sector_stats:
+            sector_stats[sector] = {
+                "sector": sector,
+                "advancers": 0,
+                "decliners": 0,
+                "unchanged": 0,
+                "sum_pct_change": 0.0,
+                "count": 0,
+            }
+
+        stat = sector_stats[sector]
+        if pct > 0:
+            stat["advancers"] += 1
+        elif pct < 0:
+            stat["decliners"] += 1
+        else:
+            stat["unchanged"] += 1
+
+        stat["sum_pct_change"] += pct
+        stat["count"] += 1
+
+    sectors = []
+    for sec, stat in sector_stats.items():
+        avg_move = stat["sum_pct_change"] / stat["count"] if stat["count"] > 0 else 0.0
+        sectors.append({
+            "sector": sec,
+            "advancers": stat["advancers"],
+            "decliners": stat["decliners"],
+            "unchanged": stat["unchanged"],
+            "avg_move": round(avg_move, 2),
+        })
+
+    # -------------- momentum table (5d & 20d) --------------
+    price_cols = [c for c in df.columns if c != "Date"]
+    momentum_rows = []
+
+    for sym in price_cols:
+        pct_5d = _pct_change_over_days(df, sym, 5)
+        pct_20d = _pct_change_over_days(df, sym, 20)
+        if pct_5d is None or pct_20d is None:
+            continue
+
+        # simple momentum score: recent 5d has double weight
+        score = 2 * pct_5d + pct_20d
+
+        momentum_rows.append({
+            "symbol": sym,
+            "pct_5d": round(pct_5d, 2),
+            "pct_20d": round(pct_20d, 2),
+            "momentum_score": round(score, 2),
+        })
+
+    # top 10 strongest momentum
+    momentum_rows = sorted(momentum_rows, key=lambda x: x["momentum_score"], reverse=True)[:10]
+
+    # -------------- final payload --------------
+    return jsonify({
+        "date": last_date,
+        "breadth": {
+            "advancers": advancers,
+            "decliners": decliners,
+            "unchanged": unchanged,
+            "adv_decl_ratio": adv_decl_ratio,
+        },
+        "sectors": sectors,
+        "momentum": momentum_rows,
+    })
+
+
+# ===========================================================
+#  FINAL DECISION ENGINE (history + ARIMA only)
 # ===========================================================
 @app.route("/api/dsfm/decision/<symbol>")
 def api_dsfm_decision(symbol):
-    forecast = forecast_arima(symbol)
-    if not forecast:
+
+    # Run ARIMA forecast
+    arima = forecast_arima(symbol)
+
+    if not arima:
         return jsonify({"error": "No forecast"}), 404
 
-    sentiment = get_sentiment(symbol)
-    direction = forecast["direction"]
+    # Get sentiment (FIXED)
+    sentiment = get_dynamic_sentiment(symbol)
+    direction = arima["direction"]
     s_label = sentiment["label"]
 
-    # Generate history for last 200 days
+    # Build 800-day historical series
     history_df = get_price_series(symbol).tail(800)
     history = [
         {"date": d.strftime("%Y-%m-%d"), "price": float(p)}
         for d, p in zip(history_df["Date"], history_df["Price"])
     ]
 
-    # Decision logic
+    # Final decision rule
     if direction == "UP" and s_label == "POSITIVE":
         signal = "BUY"
     elif direction == "UP" and s_label == "NEGATIVE":
@@ -412,46 +623,15 @@ def api_dsfm_decision(symbol):
         "forecast_direction": direction,
         "sentiment_label": s_label,
         "sentiment_score": sentiment["score"],
-        "forecast": forecast["future"],
-        "history": history        # 👈 IMPORTANT
-    })
 
-# ===========================================================
-#  MOST BOUGHT STOCK (based on demand from market_data)
-# ===========================================================
-@app.route("/api/most-bought")
-def api_most_bought():
-    df = read_timeseries()
-    if df.empty:
-        return jsonify({"most_bought": None})
+        # Forecast used by frontend
+        "forecast": arima["future"],
 
-    last, prev, date = latest_and_prev_prices(df)
+        # For compatibility (frontend can ignore these)
+        "forecast_arima": arima["future"],
+        "forecast_garch": [],
 
-    changes = []
-    for sym in last.index:
-        if pd.isna(last[sym]) or pd.isna(prev[sym]):
-            continue
-
-        pct = (last[sym] - prev[sym]) / prev[sym] * 100
-        changes.append({
-            "symbol": sym,
-            "ltp": float(last[sym]),
-            "pct_change": round(pct, 2)
-        })
-
-    if not changes:
-        return jsonify({"most_bought": None})
-
-    df_changes = pd.DataFrame(changes)
-
-    # stock with largest percentage gain = most bought
-    most_bought = df_changes.sort_values("pct_change", ascending=False).iloc[0]
-
-    return jsonify({
-        "date": date,
-        "symbol": most_bought["symbol"],
-        "ltp": most_bought["ltp"],
-        "pct_change": most_bought["pct_change"]
+        "history": history
     })
 
 
