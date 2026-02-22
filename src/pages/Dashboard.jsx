@@ -1,10 +1,12 @@
 import { Link } from "react-router-dom";
+import NiftyChart from "../components/NiftyCharts";
 import InvestmentSummary from "../components/InvestmentSummary";
 import MostBought from "../components/MostBought";
 import InvestmentProducts from "../components/InvestmentProducts";
 import InvestingTools from "../components/InvestingTools";
-import MarketHeatmap from "../components/MarketHeatMap";   // 👈 NEW
-import SuperstarInvestors from "../components/SuperstarInvestors"; // 👈 NEW
+import MarketHeatmap from "../components/MarketHeatMap";
+import SuperstarInvestors from "../components/SuperstarInvestors";
+import DSFMAnalytics from "../components/DSFMAnalytics";
 
 export default function Dashboard() {
   return (
@@ -14,31 +16,37 @@ export default function Dashboard() {
         <h1 className="text-2xl font-semibold text-blue-400">
           Investments Summary
         </h1>
-
         <Link
           to="/marketmovers"
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-md transition-all duration-200"
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-md transition-all duration-200 text-sm"
         >
           View Market Movers
         </Link>
       </div>
 
+      {/* Live NIFTY 50 chart */}
+      <NiftyChart />
+
       {/* Equity / MF summary from backend */}
       <InvestmentSummary />
 
-      {/* Most bought + watchlist-style tiles */}
+      {/* Most active stocks (by volume, live) */}
       <MostBought />
 
       {/* Investment product shortcuts */}
       <InvestmentProducts />
 
+      {/* Market Heatmap */}
       <MarketHeatmap />
 
-      {/* Tools section – DSFM lives in its own tab, not here */}
+      {/* Tools section */}
       <InvestingTools />
 
-      <SuperstarInvestors />
+      {/* DSFM teaser */}
+      <DSFMAnalytics />
 
+      {/* Superstar Investors */}
+      <SuperstarInvestors />
     </div>
   );
 }

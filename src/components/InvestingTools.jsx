@@ -25,7 +25,7 @@ export default function InvestingTools() {
           to="/dsfm"
           className="bg-[#1B2029] p-3 text-center rounded-lg cursor-pointer hover:bg-[#242A36] transition-colors text-sm text-blue-300"
         >
-          DSFM Analytics
+          Analysis
         </Link>
       </div>
     </div>
