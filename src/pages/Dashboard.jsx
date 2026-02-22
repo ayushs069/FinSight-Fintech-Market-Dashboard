@@ -11,7 +11,6 @@ export default function Dashboard() {
          <div className="flex justify-between items-center">
         <h1 className="text-2xl font-semibold text-blue-400">Investments Summary</h1>
 
-        {/* ✅ New Market Movers Button */}
         <Link
           to="/marketmovers"
           className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-md transition-all duration-200"

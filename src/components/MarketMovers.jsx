@@ -1,65 +1,66 @@
-export default function MarketMovers() {
-  const topGainers = [
-    { name: "ADANIPORTS", price: 1454.8, change: "+36.90 (+2.60%)" },
-    { name: "POWERGRID", price: 295.35, change: "+7.10 (+2.46%)" },
-    { name: "NTPC", price: 347.5, change: "+8.35 (+2.46%)" },
-    { name: "HCLTECH", price: 1557.3, change: "+35.20 (+2.31%)" },
-    { name: "SHRIRAMFIN", price: 738.45, change: "+14.75 (+2.04%)" },
-  ];
+// src/components/MarketMovers.jsx
+import { useEffect, useState } from "react";
+import axios from "axios";
 
-  const topLosers = [
-    { name: "DRREDDY", price: 1250.9, change: "-38.50 (-2.99%)" },
-    { name: "COALINDIA", price: 382.0, change: "-9.40 (-2.40%)" },
-    { name: "BEL", price: 407.2, change: "-6.35 (-1.54%)" },
-    { name: "M&M", price: 3534.7, change: "-44.40 (-1.24%)" },
-    { name: "ETERNAL", price: 330.45, change: "-4.15 (-1.24%)" },
-  ];
+export default function MarketMovers() {
+  const [gainers, setGainers] = useState([]);
+  const [losers, setLosers] = useState([]);
+  const [date, setDate] = useState(null);
+  const backend = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+
+  useEffect(() => {
+    fetchMovers();
+    const id = setInterval(fetchMovers, 60 * 1000); // refresh every 60s (optional)
+    return () => clearInterval(id);
+  }, []);
+
+  async function fetchMovers() {
+    try {
+      const res = await axios.get(`${backend}/api/market-movers`);
+      setDate(res.data.date);
+      setGainers(res.data.gainers || []);
+      setLosers(res.data.losers || []);
+    } catch (err) {
+      console.error("market movers fetch error", err);
+    }
+  }
 
   return (
-    <div className="bg-[#1B2029] p-6 rounded-lg min-h-screen">
-      <h2 className="text-2xl font-semibold text-blue-400 mb-4">Market movers</h2>
-
-      <div className="flex justify-end mb-4 space-x-2">
-        <select className="bg-gray-800 text-gray-300 text-sm rounded px-3 py-1">
-          <option>Nifty 50</option>
-          <option>Sensex</option>
-        </select>
-        <select className="bg-gray-800 text-gray-300 text-sm rounded px-3 py-1">
-          <option>1 Day</option>
-          <option>1 Week</option>
-          <option>1 Month</option>
-        </select>
+    <div className="bg-[#1B2029] p-6 rounded-lg">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-2xl font-semibold text-blue-400">Market movers</h2>
+        <div className="text-sm text-gray-400">Latest: {date ? new Date(date).toLocaleDateString() : "—"}</div>
       </div>
 
       <div className="flex space-x-8">
-        {/* Top Gainers */}
         <div className="w-1/2">
-          <h3 className="text-gray-300 mb-2">Top gainers (33)</h3>
+          <h3 className="text-gray-300 mb-2">Top gainers</h3>
           <table className="w-full text-sm">
             <tbody>
-              {topGainers.map((g, i) => (
+              {gainers.map((g, i) => (
                 <tr key={i} className="border-b border-gray-800 hover:bg-[#242A36]">
-                  <td className="py-2 text-white">{g.name}</td>
-                  <td className="text-right text-white">{g.price}</td>
-                  <td className="text-green-400 text-right">{g.change}</td>
+                  <td className="py-2 text-white">{g.symbol}</td>
+                  <td className="text-right text-white">{Number(g.ltp).toFixed(2)}</td>
+                  <td className="text-green-400 text-right">{g.pct_change}%</td>
                 </tr>
               ))}
+              {gainers.length === 0 && <tr><td className="py-4 text-gray-400">No data</td></tr>}
             </tbody>
           </table>
         </div>
 
-        {/* Top Losers */}
         <div className="w-1/2">
-          <h3 className="text-gray-300 mb-2">Top losers (17)</h3>
+          <h3 className="text-gray-300 mb-2">Top losers</h3>
           <table className="w-full text-sm">
             <tbody>
-              {topLosers.map((l, i) => (
+              {losers.map((l, i) => (
                 <tr key={i} className="border-b border-gray-800 hover:bg-[#242A36]">
-                  <td className="py-2 text-white">{l.name}</td>
-                  <td className="text-right text-white">{l.price}</td>
-                  <td className="text-red-400 text-right">{l.change}</td>
+                  <td className="py-2 text-white">{l.symbol}</td>
+                  <td className="text-right text-white">{Number(l.ltp).toFixed(2)}</td>
+                  <td className="text-red-400 text-right">{l.pct_change}%</td>
                 </tr>
               ))}
+              {losers.length === 0 && <tr><td className="py-4 text-gray-400">No data</td></tr>}
             </tbody>
           </table>
         </div>

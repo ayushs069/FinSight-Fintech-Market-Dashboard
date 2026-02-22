@@ -1,22 +1,43 @@
-const stocks = [
-  { name: "GOLDBEES", price: 99.95, change: "+3.21%" },
-  { name: "HDFCAMC", price: 5398, change: "-4.40%" },
-  { name: "ADANIGREEN", price: 1112.6, change: "+10.79%" },
-  { name: "BLUEDART", price: 6572, change: "+18.68%" },
-];
+// src/components/MostBought.jsx
+import { useEffect, useState } from "react";
+import axios from "axios";
 
 export default function MostBought() {
+  const [watch, setWatch] = useState([]);
+  const backend = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+const [mostBought, setMostBought] = useState(null);
+
+useEffect(() => {
+  axios.get(`${backend}/api/most-bought`)
+    .then(res => setMostBought(res.data))
+    .catch(() => setMostBought(null));
+}, []);
+
+  async function fetchWatch() {
+    try {
+      const res = await axios.get(`${backend}/api/watchlist`);
+      setWatch(res.data.watchlist || []);
+    } catch (err) {
+      console.error("watchlist fetch error", err);
+    }
+  }
+
   return (
-    <div>
-      <h2 className="text-gray-400 text-sm mb-2">Most Bought on Kotak</h2>
+    <div className="bg-[#1B2029] p-4 rounded-lg">
+      <h3 className="text-sm text-gray-400 mb-2">Most bought on Kotak</h3>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {stocks.map((s, i) => (
-          <div key={i} className="bg-[#1B2029] p-3 rounded-lg text-center">
-            <p className="font-semibold">{s.name}</p>
-            <p className="text-sm">₹{s.price}</p>
-            <p className={s.change.startsWith("+") ? "text-green-400" : "text-red-400"}>{s.change}</p>
+        {watch.map((w, i) => (
+          <div key={i} className="bg-[#242A36] p-3 rounded">
+            <div className="font-semibold">{w.symbol}</div>
+            <div className="text-sm text-gray-300">₹{Number(w.ltp).toFixed(2)}</div>
           </div>
         ))}
+       <div className="text-gray-300">
+  {mostBought
+    ? `${mostBought.symbol}  (+${mostBought.pct_change}%)`
+    : "No items"}
+</div>
+
       </div>
     </div>
   );
